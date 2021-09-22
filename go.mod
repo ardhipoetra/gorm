@@ -1,8 +1,9 @@
-module github.com/jinzhu/gorm
+module github.com/ardhipoetra/gorm
 
 go 1.12
 
 require (
+	github.com/ardhipoetra/go-dqlite v1.7.2-0.20211007092211-c6c3f4078dad
 	github.com/denisenkom/go-mssqldb v0.0.0-20190515213511-eb9f6a1743f3
 	github.com/erikstmartin/go-testdb v0.0.0-20160219214506-8d10e4a1bae5
 	github.com/go-sql-driver/mysql v1.4.1

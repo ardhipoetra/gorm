@@ -9,6 +9,10 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/ardhipoetra/go-dqlite/client"
+	"github.com/ardhipoetra/go-dqlite/driver"
+	"github.com/ardhipoetra/go-dqlite/protocol"
 )
 
 // DB contains information for current db connection
@@ -44,6 +48,84 @@ const (
 	detailedLogMode
 )
 
+var leader_cli *client.Client
+var voter_cli []*client.Client
+
+func connectClients(leader_ string, voter_ []string) {
+	// connect each client with dqlite instance
+	leader_cli, _ = client.New(context.Background(), leader_)
+	for i, v := range voter_ {
+		fmt.Printf("%d %v\n", i, v)
+		voter_cli[i], _ = client.New(context.Background(), v)
+	}
+}
+
+func setupCluster(leader_ string, voter_ []string) protocol.NodeStore {
+	// set the inmemnodestore to refer the cluster
+	store := client.NewInmemNodeStore()
+	store.Set(context.Background(), []client.NodeInfo{{Address: leader_}})
+
+	fmt.Printf("Find leader...\n")
+	leadercli, _ := client.FindLeader(context.Background(), store, []client.Option{client.WithDialFunc(client.DefaultDialFunc)}...)
+	fmt.Printf("Leader is: %s\n", leadercli)
+
+	for i, v := range voter_ {
+		// prepare node 2 and 3 to be added to the leader
+		// the leader by default has ID = 1 or BootstrapID (some hardcoded value)
+		client_voter := client.NodeInfo{ID: uint64(i)+uint64(2), Address: v, Role: client.Voter}
+
+		// add node2
+		fmt.Printf("(%d) Add Client %s ...", client_voter.ID, client_voter)
+		err := leadercli.Add(context.Background(), client_voter)
+		if err != nil {
+			fmt.Errorf("Cannot add node %s %s\n", client_voter, err)
+		}
+	}
+
+	return store
+}
+
+func NewDQLite(leader_ string, voter_ []string) {
+	voter_cli = make([]*client.Client, len(voter_))
+
+	// connect clients so we can use later
+	fmt.Printf("Connect to client...")
+	connectClients(leader_, voter_)
+
+	// setup the cluster
+	fmt.Printf("Setup the cluster...\n")
+	store := setupCluster(leader_, voter_)
+	driver, _ := driver.New(store)
+	sql.Register("dqlite", driver)
+}
+
+func printCluster() {
+	var leader_ni *protocol.NodeInfo
+	fmt.Println("Printing cluster..")
+
+	if leader_cli != nil {
+		fmt.Println("From Leader:")
+		leader_ni, _ = leader_cli.Leader(context.Background())
+		fmt.Println(leader_ni.ID, " at ", leader_ni.Address)
+		servers, _ := leader_cli.Cluster(context.Background())
+		for _, ni := range servers {
+			fmt.Printf("%s--%s,", ni.Address, ni.Role)
+		}
+		fmt.Println("\n-----------------")
+	}
+
+	for i, v := range voter_cli {
+		fmt.Println("(%d) From Node %s:", i, v)
+		leader_ni, _ = v.Leader(context.Background())
+		fmt.Println(leader_ni.ID, " at ", leader_ni.Address)
+		servers, _ := v.Cluster(context.Background())
+		for _, ni := range servers {
+			fmt.Printf("%s--%s,", ni.Address, ni.Role)
+		}
+		fmt.Println("\n-----------------")
+	}
+}
+
 // Open initialize a new db connection, need to import driver first, e.g:
 //
 //     import _ "github.com/go-sql-driver/mysql"
@@ -67,14 +149,26 @@ func Open(dialect string, args ...interface{}) (db *DB, err error) {
 	switch value := args[0].(type) {
 	case string:
 		var driver = dialect
-		if len(args) == 1 {
-			source = value
-		} else if len(args) >= 2 {
-			driver = value
-			source = args[1].(string)
+		if driver == "dqlite" { // case for dqlite
+			leader := value
+			voters := args[1].([]string)
+
+			NewDQLite(leader, voters)
+
+			dbSQL, err = sql.Open(driver, "dqlite_test")
+
+			printCluster()
+			ownDbSQL = true
+		} else {
+			if len(args) == 1 {
+				source = value
+			} else if len(args) >= 2 {
+				driver = value
+				source = args[1].(string)
+			}
+			dbSQL, err = sql.Open(driver, source)
+			ownDbSQL = true
 		}
-		dbSQL, err = sql.Open(driver, source)
-		ownDbSQL = true
 	case SQLCommon:
 		dbSQL = value
 		ownDbSQL = false
